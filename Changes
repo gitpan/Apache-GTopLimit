@@ -1,5 +1,17 @@
 =head1 CHANGES (Apache::GTopLimit)
 
+=head1 ver 1.01 Thu Mar 14 13:53:16 SGT 2002
+
+* add an unshared memory threshold, similar to Apache::SizeLimit
+
+* improve the debug mode testing whether at least one threshold was
+  set
+
+* cache the previously fetched shared and/or size for reuse in the
+  unshared memory calculation, which makes things a bit faster.
+
+* update docs
+
 =head1 ver 1.0 Wed Feb 20 11:54:23 SGT 2002
 
 * making the DEBUG a constant variable, settable via PerlSetVar

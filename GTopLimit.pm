@@ -6,7 +6,7 @@ use Apache::Constants qw(:common);
 use Apache ();
 use GTop ();
 
-$Apache::GTopLimit::VERSION = '1.0';
+$Apache::GTopLimit::VERSION = '1.01';
 $Apache::GTopLimit::CHECK_EVERY_N_REQUESTS = 1;
 $Apache::GTopLimit::REQUEST_COUNT = 1;
 
@@ -24,6 +24,7 @@ my $gtop = new GTop;
 
 sub exit_if_too_big {
     my $r = shift;
+    my ($size, $shared);
 
     return OK if
         (++$Apache::GTopLimit::REQUEST_COUNT < $Apache::GTopLimit::CHECK_EVERY_N_REQUESTS);
@@ -32,16 +33,19 @@ sub exit_if_too_big {
 
     # Check the Memory Size if were requested
     if (defined $Apache::GTopLimit::MAX_PROCESS_SIZE) {
-	my $size = $gtop->proc_mem($$)->size / 1024;
+	$size = $gtop->proc_mem($$)->size / 1024;
 
-        error_log("max mem: $size $Apache::GTopLimit::MAX_PROCESS_SIZE $Apache::GTopLimit::REQUEST_COUNT")
+        error_log("max mem: $size $Apache::GTopLimit::MAX_PROCESS_SIZE " .
+                  "$Apache::GTopLimit::REQUEST_COUNT")
             if DEBUG;
 
 	if ($size > $Apache::GTopLimit::MAX_PROCESS_SIZE) {
 
 	    # I have no idea if this will work on anything but UNIX
 	    if (getppid > 1) {	# this is a  child httpd
-		error_log("httpd process is too big, exiting at size=$size KB") if DEBUG;;
+		error_log("httpd process is too big, " .
+                          "exiting at size=$size KB")
+                    if DEBUG;
 	        $r->child_terminate;
 	    }
             else {              # this is the main httpd
@@ -49,50 +53,91 @@ sub exit_if_too_big {
 	    }
 	}
     }
-    else {
-	error_log("you didn't set \$Apache::GTopLimit::MAX_PROCESS_SIZE") if DEBUG;
-    }
 
     # Now check the Shared Memory Size if were requested
     if (defined $Apache::GTopLimit::MIN_PROCESS_SHARED_SIZE) {
-	my $size = $gtop->proc_mem($$)->share / 1024;
-	error_log("shared mem: $size $Apache::GTopLimit::MIN_PROCESS_SHARED_SIZE $Apache::GTopLimit::REQUEST_COUNT")
+	$shared = $gtop->proc_mem($$)->share / 1024;
+
+	error_log("shared mem: $shared $Apache::GTopLimit::MIN_PROCESS_SHARED_SIZE " .
+                  "$Apache::GTopLimit::REQUEST_COUNT")
             if DEBUG;
 
-	if ($size < $Apache::GTopLimit::MIN_PROCESS_SHARED_SIZE) {
+	if ($shared < $Apache::GTopLimit::MIN_PROCESS_SHARED_SIZE) {
 	    # I have no idea if this will work on anything but UNIX
 	    if (getppid > 1) {	# this is a  child httpd
-		error_log("httpd process's shared memory is too low, exiting at SHARED SIZE=$size KB")
+		error_log("httpd process's shared memory is too low, " .
+                          "exiting at SHARED SIZE=$shared KB")
                     if DEBUG;
 	        $r->child_terminate;
 	    }
 	    # we don't care about the parent's shared size, do we?
 	}
     }
-    else {
-        error_log("you didn't set \$Apache::GTopLimit::MIN_PROCESS_SHARE_SIZE")
+
+    # Now check the UnShared Memory Size if were requested
+    if (defined $Apache::GTopLimit::MAX_PROCESS_UNSHARED_SIZE) {
+	$size   ||= $gtop->proc_mem($$)->size / 1024;
+	$shared ||= $gtop->proc_mem($$)->share / 1024;
+        my $unshared = $size - $shared;
+
+	error_log("shared mem: $unshared $Apache::GTopLimit::MAX_PROCESS_UNSHARED_SIZE " .
+                  "$Apache::GTopLimit::REQUEST_COUNT")
             if DEBUG;
+
+	if ($unshared > $Apache::GTopLimit::MAX_PROCESS_UNSHARED_SIZE) {
+	    # I have no idea if this will work on anything but UNIX
+	    if (getppid > 1) {	# this is a  child httpd
+		error_log("httpd process's unshared memory is too low, " .
+                          "exiting at UNSHARED SIZE=$unshared KB")
+                    if DEBUG;
+	        $r->child_terminate;
+	    }
+	    # we don't care about the parent's shared size, do we?
+	}
     }
 
     return OK;
 }
 
-# set_max_size can be called from within a CGI/Registry script to tell the httpd
-# to exit if the CGI causes the process to grow too big.
+# set_max_size can be called from within a handler/Registry script to
+# tell the httpd to exit if the request causes the process to grow bigger
+# than the specified limit
 sub set_max_size {
     $Apache::GTopLimit::MAX_PROCESS_SIZE = shift;
     Apache->request->post_connection(\&exit_if_too_big);
 }
 
-# set_min_shared_size can be called from within a CGI/Registry script to tell the httpd
-# to exit if the CGI causes the process to grow too big.
+# set_min_shared_size can be called from within a handler/Registry
+# script to tell the httpd to exit if the request causes the process
+# to lose its shared memory over the specified limit
 sub set_min_shared_size {
     $Apache::GTopLimit::MIN_PROCESS_SHARED_SIZE = shift;
     Apache->request->post_connection(\&exit_if_too_big);
 }
 
+# set_max_shared_size can be called from within a handler/Registry
+# script to tell the httpd to exit if the request causes the process
+# to have its unshared memory go over the specified limit
+sub set_max_unshared_size {
+    $Apache::GTopLimit::MAX_PROCESS_UNSHARED_SIZE = shift;
+    Apache->request->post_connection(\&exit_if_too_big);
+}
+
 sub handler {
     my $r = shift || Apache->request;
+
+    if (DEBUG) {
+        unless (defined $Apache::GTopLimit::MAX_PROCESS_SIZE        ||
+                defined $Apache::GTopLimit::MIN_PROCESS_SHARED_SIZE ||
+                defined $Apache::GTopLimit::MAX_PROCESS_UNSHARED_SIZE) {
+            error_log("you didn't set any of \$Apache::GTopLimit::MAX_PROCESS_SIZE," .
+                      " \$Apache::GTopLimit::MIN_PROCESS_SHARED_SIZE or" .
+                      " \$Apache::GTopLimit::MAX_PROCESS_UNSHARED_SIZE." .
+                      " skipping Apache::GTopLimit handler");
+            return DECLINED;
+        }
+    }
+
     $r->post_connection(\&exit_if_too_big) if $r->is_main;
     return DECLINED;
 }
@@ -120,20 +165,21 @@ request:
     use Apache::GTopLimit;
 
     # Control the life based on memory size
-    # in KB, so this is 10MB
+    # in KB, so this is ~10MB
     $Apache::GTopLimit::MAX_PROCESS_SIZE = 10000; 
 
     # Control the life based on Shared memory size
-    # in KB, so this is 4MB 
-    $Apache::GTopLimit::MIN_PROCESS_SHARED_SIZE = 4000; 
+    # in KB, so this is ~4MB 
+    $Apache::GTopLimit::MIN_PROCESS_SHARED_SIZE = 4000;
 
-    # watch what happens
-    $Apache::GTopLimit::DEBUG = 1;
+    # Control the life based on UnShared memory size
+    # in KB, so this is ~6MB 
+    $Apache::GTopLimit::MAX_PROCESS_UNSHARED_SIZE = 6000;
 
     # in your httpd.conf:
     # ___________________
 
-    # debug must be set before the module is loaded
+    # debug mode must be set before the module is loaded
     PerlSetVar Apache::GTopLimit::DEBUG 1
 
     # register handler
@@ -145,7 +191,7 @@ Or you can just check those requests that are likely to get big or
 unshared.  This way of checking is also easier for those who are
 mostly just running Apache::Registry scripts:
 
-    # in your CGI:
+    # in your handler/CGI script
     use Apache::GTopLimit;
       # Max Process Size in KB
     Apache::GTopLimit->set_max_size(10000);	
@@ -154,7 +200,13 @@ and/or
 
     use Apache::GTopLimit;
        # Min Shared process Size in KB
-    Apache::GTopLimit->set_min_shared_size(4000); 
+    Apache::GTopLimit->set_min_shared_size(4000);
+
+and/or
+
+    use Apache::GTopLimit;
+       # Min UnShared process Size in KB
+    Apache::GTopLimit->set_max_unshared_size(6000);
 
 Since accessing the process info might add a little overhead, you may
 want to only check the process size every N times.  To do so, put this
@@ -165,10 +217,12 @@ in your startup.pl or CGI:
 This will only check the process size every other time the process size
 checker is called.
 
-Note: The B<MAX_PROCESS_SIZE> and B<MIN_PROCESS_SHARED_SIZE> are
-standalone, and each will be checked if only set. So if you set both
--- the process can be killed if it grows beyond the limit or its
-shared memory goes below the limit.
+Note: The C<MAX_PROCESS_SIZE>, C<MIN_PROCESS_SHARED_SIZE> and
+C<MAX_PROCESS_UNSHARED_SIZE> are independent, and each will be checked
+if only set. So if you set the first two -- the process can be killed
+if it grows beyond the limit or its shared memory goes below the
+limit. It's better not to mix C<MAX_PROCESS_UNSHARED_SIZE> with the
+first two.
 
 =head1 DESCRIPTION
 
@@ -185,30 +239,35 @@ list on how to tell the httpd process to exit if:
 
 its memory size goes beyond a specified limit
 
-=item *  
+=item *
 
 its shared memory size goes below a specified limit
+
+=item *
+
+its unshared memory size goes beyond a specified limit
 
 =back
 
 =head2 Limiting memory size
 
-Actually there are two big reasons your httpd children will grow.  First,
-it could have a bug that causes the process to increase in size
-dramatically, until your system starts swapping.  Second, your process just
-does stuff that requires a lot of memory, and the more different kinds of
-requests your server handles, the larger the httpd processes grow over
-time.
+There are two big reasons your httpd children will grow.  First, it
+could have a bug that causes the process to increase in size
+dramatically, until your system starts swapping.  Second, your process
+just does stuff that requires a lot of memory (or leaks memory) , and
+the more different kinds of requests your server handles, the larger
+the httpd processes grow over time.
 
-This module will not really help you with the first problem.  For that you
-should probably look into Apache::Resource or some other means of setting a
-limit on the data size of your program.  BSD-ish systems have setrlimit()
-which will croak your memory gobbling processes.  However it is a little
-violent, terminating your process in mid-request.
+This module will not really help you with the first problem.  For that
+you should probably look into Apache::Resource or some other means of
+setting a limit on the data size of your program.  BSD-ish systems
+have setrlimit() which will croak your memory gobbling processes.
+However it is a little violent, terminating your process in
+mid-request.
 
 This module attempts to solve the second situation where your process
-slowly grows over time.  The idea is to check the memory usage after every
-request, and if it exceeds a threshold, exit gracefully.
+slowly grows over time.  The idea is to check the memory usage after
+every request, and if it exceeds a threshold, exit gracefully.
 
 By using this module, you should be able to discontinue using the
 Apache configuration directive B<MaxRequestsPerChild>, although for
@@ -223,7 +282,7 @@ kill the process when its hs too little of shared memory.
 
 When the same memory page is being shared between many processes, you
 need less physical memory relative to the case where the each process
-will have its own copy of the memory page. 
+will have its own copy of the memory page.
 
 If your OS supports shared memory you will get a great benefit when
 you deploy this feature. With mod_perl you enable it by preloading the
@@ -246,6 +305,11 @@ executes. This module allows you to save up the time to make this
 tuning and retuning, by simply specifying the minimum size of the
 shared memory for each process. And when it crosses the line, to kill
 it off.
+
+Finally instead of trying to tune the memory size and shared memory
+thresholds, it's much easier to only specify the amount of unshared
+memory that can be tolerated and kill the process which has too much
+of unshared memory.
 
 =head1 AUTHOR
 
