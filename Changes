@@ -1,5 +1,16 @@
 =head1 CHANGES (Apache::GTopLimit)
 
+=head1 ver 1.02
+
+* return DECLINED and not OK when not doing anything
+
+* made the request counter a package's private lexical variable, since
+  it shouldn't be accessible by other modules. 
+
+* Fix the $Apache::GTopLimit::CHECK_EVERY_N_REQUESTS logic, was doing
+  checking one request to often. Thanks to Alexandr Ciornii
+  <chorny@tri.md> for the spot
+
 =head1 ver 1.01 Thu Mar 14 13:53:16 SGT 2002
 
 * add an unshared memory threshold, similar to Apache::SizeLimit

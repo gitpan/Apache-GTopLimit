@@ -6,9 +6,10 @@ use Apache::Constants qw(:common);
 use Apache ();
 use GTop ();
 
-$Apache::GTopLimit::VERSION = '1.01';
+$Apache::GTopLimit::VERSION = '1.02';
 $Apache::GTopLimit::CHECK_EVERY_N_REQUESTS = 1;
-$Apache::GTopLimit::REQUEST_COUNT = 1;
+
+my $request_count = 0;
 
 # the debug can be set on the main server level of
 # httpd.conf with:
@@ -20,23 +21,24 @@ use constant DEBUG =>
 
 
 # init the GTop object
-my $gtop = new GTop;
+my $gtop = GTop->new();
 
 sub exit_if_too_big {
     my $r = shift;
     my ($size, $shared);
 
-    return OK if
-        (++$Apache::GTopLimit::REQUEST_COUNT < $Apache::GTopLimit::CHECK_EVERY_N_REQUESTS);
+    #error_log("count: $request_count") if DEBUG;
 
-    $Apache::GTopLimit::REQUEST_COUNT = 1;
+    return DECLINED if $Apache::GTopLimit::CHECK_EVERY_N_REQUESTS &&
+        ++$request_count < $Apache::GTopLimit::CHECK_EVERY_N_REQUESTS;
+    $request_count = 0; # reset the counter
 
     # Check the Memory Size if were requested
     if (defined $Apache::GTopLimit::MAX_PROCESS_SIZE) {
 	$size = $gtop->proc_mem($$)->size / 1024;
 
         error_log("max mem: $size $Apache::GTopLimit::MAX_PROCESS_SIZE " .
-                  "$Apache::GTopLimit::REQUEST_COUNT")
+                  "$request_count")
             if DEBUG;
 
 	if ($size > $Apache::GTopLimit::MAX_PROCESS_SIZE) {
@@ -59,7 +61,7 @@ sub exit_if_too_big {
 	$shared = $gtop->proc_mem($$)->share / 1024;
 
 	error_log("shared mem: $shared $Apache::GTopLimit::MIN_PROCESS_SHARED_SIZE " .
-                  "$Apache::GTopLimit::REQUEST_COUNT")
+                  "$request_count")
             if DEBUG;
 
 	if ($shared < $Apache::GTopLimit::MIN_PROCESS_SHARED_SIZE) {
@@ -80,8 +82,8 @@ sub exit_if_too_big {
 	$shared ||= $gtop->proc_mem($$)->share / 1024;
         my $unshared = $size - $shared;
 
-	error_log("shared mem: $unshared $Apache::GTopLimit::MAX_PROCESS_UNSHARED_SIZE " .
-                  "$Apache::GTopLimit::REQUEST_COUNT")
+	error_log("unshared mem: $unshared $Apache::GTopLimit::MAX_PROCESS_UNSHARED_SIZE " .
+                  "$request_count")
             if DEBUG;
 
 	if ($unshared > $Apache::GTopLimit::MAX_PROCESS_UNSHARED_SIZE) {
@@ -325,6 +327,11 @@ Doug Bagley wrote the original C<Apache::SizeLimit>
 =head1 CHANGES
 
 See external file 'Changes'.
+
+=head1 COPYRIGHT
+
+The C<Apache::GTopLimit> module is free software; you can redistribute
+it and/or modify it under the same terms as Perl itself.
 
 =cut
 
