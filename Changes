@@ -1,0 +1,12 @@
+=head1 CHANGES (Apache::GTopLimit)
+
+=head1 ver 0.1 Tue Aug 17 07:32:20 IDT 1999
+
+* Removed the use of global variables (save a few memory bits)
+ 
+* Rewrite of the memory size limit functionality to use GTop
+
+* Added a Shared memory limit functionality
+      
+* Added debug mode
+
