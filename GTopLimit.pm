@@ -1,5 +1,108 @@
 package Apache::GTopLimit;
 
+use strict;
+
+use Apache::Constants qw(:common);
+use Apache ();
+use GTop ();
+
+$Apache::GTopLimit::VERSION = '1.0';
+$Apache::GTopLimit::CHECK_EVERY_N_REQUESTS = 1;
+$Apache::GTopLimit::REQUEST_COUNT = 1;
+
+# the debug can be set on the main server level of
+# httpd.conf with:
+#   PerlSetVar Apache::GTopLimit::DEBUG 1
+use constant DEBUG =>
+    defined Apache->server->dir_config('Apache::GTopLimit::DEBUG')
+        ? Apache->server->dir_config('Apache::GTopLimit::DEBUG')
+        : 0;
+
+
+# init the GTop object
+my $gtop = new GTop;
+
+sub exit_if_too_big {
+    my $r = shift;
+
+    return OK if
+        (++$Apache::GTopLimit::REQUEST_COUNT < $Apache::GTopLimit::CHECK_EVERY_N_REQUESTS);
+
+    $Apache::GTopLimit::REQUEST_COUNT = 1;
+
+    # Check the Memory Size if were requested
+    if (defined $Apache::GTopLimit::MAX_PROCESS_SIZE) {
+	my $size = $gtop->proc_mem($$)->size / 1024;
+
+        error_log("max mem: $size $Apache::GTopLimit::MAX_PROCESS_SIZE $Apache::GTopLimit::REQUEST_COUNT")
+            if DEBUG;
+
+	if ($size > $Apache::GTopLimit::MAX_PROCESS_SIZE) {
+
+	    # I have no idea if this will work on anything but UNIX
+	    if (getppid > 1) {	# this is a  child httpd
+		error_log("httpd process is too big, exiting at size=$size KB") if DEBUG;;
+	        $r->child_terminate;
+	    }
+            else {              # this is the main httpd
+		error_log("main process is too big, size=$size KB") if DEBUG;
+	    }
+	}
+    }
+    else {
+	error_log("you didn't set \$Apache::GTopLimit::MAX_PROCESS_SIZE") if DEBUG;
+    }
+
+    # Now check the Shared Memory Size if were requested
+    if (defined $Apache::GTopLimit::MIN_PROCESS_SHARED_SIZE) {
+	my $size = $gtop->proc_mem($$)->share / 1024;
+	error_log("shared mem: $size $Apache::GTopLimit::MIN_PROCESS_SHARED_SIZE $Apache::GTopLimit::REQUEST_COUNT")
+            if DEBUG;
+
+	if ($size < $Apache::GTopLimit::MIN_PROCESS_SHARED_SIZE) {
+	    # I have no idea if this will work on anything but UNIX
+	    if (getppid > 1) {	# this is a  child httpd
+		error_log("httpd process's shared memory is too low, exiting at SHARED SIZE=$size KB")
+                    if DEBUG;
+	        $r->child_terminate;
+	    }
+	    # we don't care about the parent's shared size, do we?
+	}
+    }
+    else {
+        error_log("you didn't set \$Apache::GTopLimit::MIN_PROCESS_SHARE_SIZE")
+            if DEBUG;
+    }
+
+    return OK;
+}
+
+# set_max_size can be called from within a CGI/Registry script to tell the httpd
+# to exit if the CGI causes the process to grow too big.
+sub set_max_size {
+    $Apache::GTopLimit::MAX_PROCESS_SIZE = shift;
+    Apache->request->post_connection(\&exit_if_too_big);
+}
+
+# set_min_shared_size can be called from within a CGI/Registry script to tell the httpd
+# to exit if the CGI causes the process to grow too big.
+sub set_min_shared_size {
+    $Apache::GTopLimit::MIN_PROCESS_SHARED_SIZE = shift;
+    Apache->request->post_connection(\&exit_if_too_big);
+}
+
+sub handler {
+    my $r = shift || Apache->request;
+    $r->post_connection(\&exit_if_too_big) if $r->is_main;
+    return DECLINED;
+}
+
+sub error_log {
+    warn "[", scalar(localtime(time)), "] ($$) Apache::GTopLimit: @_\n"
+}
+
+1;
+
 =head1 NAME
 
 Apache::GTopLimit - Limit Apache httpd processes 
@@ -12,6 +115,8 @@ up the process size limiter to check the process size on every
 request:
 
     # in your startup.pl:
+    # ___________________
+
     use Apache::GTopLimit;
 
     # Control the life based on memory size
@@ -26,6 +131,12 @@ request:
     $Apache::GTopLimit::DEBUG = 1;
 
     # in your httpd.conf:
+    # ___________________
+
+    # debug must be set before the module is loaded
+    PerlSetVar Apache::GTopLimit::DEBUG 1
+
+    # register handler
     PerlFixupHandler Apache::GTopLimit
     # you can set this up as any Perl*Handler that handles 
     # part of the request, even the LogHandler will do.
@@ -123,7 +234,7 @@ shared, that's when the page is being copied to the child's domain and
 then modified as it pleased to. When this happens a child uses more
 real memory and less shared.
 
-Because of Perl's nature memory pages get unshared pretty fast, when
+Because of Perl's nature, memory pages get unshared pretty fast, when
 the code is being executed and it's internal data is being modified.
 That's why as the child gets older the size of the shared memory goes
 down.
@@ -136,102 +247,16 @@ tuning and retuning, by simply specifying the minimum size of the
 shared memory for each process. And when it crosses the line, to kill
 it off.
 
-=cut
-
-use Apache::Constants qw(:common);
-use Apache ();
-# if you have GTop installed you will have Apache::GTopLimit working :)
-use GTop ();
-use strict;
-
-$Apache::GTopLimit::VERSION = '0.01';
-$Apache::GTopLimit::CHECK_EVERY_N_REQUESTS = 1;
-$Apache::GTopLimit::REQUEST_COUNT = 1;
-$Apache::GTopLimit::DEBUG = 0;
-
-# init the GTop object
-$Apache::GTopLimit::gtop = new GTop;
-
-sub exit_if_too_big {
-    my $r = shift;
-
-    return if (++$Apache::GTopLimit::REQUEST_COUNT < $Apache::GTopLimit::CHECK_EVERY_N_REQUESTS);
-    $Apache::GTopLimit::REQUEST_COUNT = 1;
-
-      # Check the Memory Size if were requested
-    if (defined($Apache::GTopLimit::MAX_PROCESS_SIZE)) {
-	my $size = $Apache::GTopLimit::gtop->proc_mem($$)->size / 1024;
-	warn "*** $size $Apache::GTopLimit::MAX_PROCESS_SIZE $Apache::GTopLimit::REQUEST_COUNT\n"
-	  if $Apache::GTopLimit::DEBUG;
-	if ($size > $Apache::GTopLimit::MAX_PROCESS_SIZE) {
-	    # I have no idea if this will work on anything but UNIX
-	    if (getppid > 1) {	# this is a  child httpd
-		&error_log("httpd process is too big, exiting at SIZE=$size KB");
-	        $r->child_terminate;
-	    } else {		# this is the main httpd
-		&error_log("main process is too big, SIZE=$size KB");
-	    }
-	}
-    } else {
-	&error_log("you didn't set \$Apache::GTopLimit::MAX_PROCESS_SIZE");
-    }
-
-      # Now check the Shared Memory Size if were requested
-    if (defined($Apache::GTopLimit::MIN_PROCESS_SHARED_SIZE)) {
-	my $size = $Apache::GTopLimit::gtop->proc_mem($$)->share / 1024;
-	#warn "*** $size $Apache::GTopLimit::MIN_PROCESS_SHARE_SIZE $Apache::GTopLimit::REQUEST_COUNT\n"
-	#  if $Apache::GTopLimit::DEBUG;
-	if ($size < $Apache::GTopLimit::MIN_PROCESS_SHARED_SIZE) {
-	    # I have no idea if this will work on anything but UNIX
-	    if (getppid > 1) {	# this is a  child httpd
-		&error_log("httpd process's shared memory is too low, exiting at SHARED SIZE=$size KB");
-	        $r->child_terminate;
-	    }
-	    # we don't care about the parent's shared size, do we?
-	}
-    } else {
-	&error_log("you didn't set \$Apache::GTopLimit::MIN_PROCESS_SHARE_SIZE");
-    }
-}
-
-# set_max_size can be called from within a CGI/Registry script to tell the httpd
-# to exit if the CGI causes the process to grow too big.
-sub set_max_size {
-    $Apache::GTopLimit::MAX_PROCESS_SIZE = shift;
-    Apache->request->post_connection(\&exit_if_too_big);
-}
-
-# set_min_shared_size can be called from within a CGI/Registry script to tell the httpd
-# to exit if the CGI causes the process to grow too big.
-sub set_min_shared_size {
-    $Apache::GTopLimit::MIN_PROCESS_SHARED_SIZE = shift;
-    Apache->request->post_connection(\&exit_if_too_big);
-}
-
-sub handler {
-    my $r = shift || Apache->request;
-    $r->post_connection(\&exit_if_too_big)
-	if ($r->is_main);
-    return(DECLINED);
-}
-
-sub error_log {
-    print STDERR "[", scalar(localtime(time)), "] ($$) Apache::GTopLimit: @_\n"
-      if $Apache::GTopLimit::DEBUG;
-}
-
-1;
-
 =head1 AUTHOR
 
-Stas Bekman <sbekman@iname.com>:
+Stas Bekman <stas@stason.org>
 
-An almost complete rewrite of Apache::SizeLimit toward using GTop
+An almost complete rewrite of C<Apache::SizeLimit> toward using GTop
 module (based on crossplatfom glibtop). The moment glibtop will be
-ported on all the platforms Apache::SizeLimit runs at (I think only
-Solaris is missing) Apache::SizeLimit will become absolete.
+ported on all the platforms C<Apache::SizeLimit> runs at (I think only
+Solaris is missing) C<Apache::SizeLimit> will become absolete.
 
-Doug Bagley wrote the original Apache::SizeLimit
+Doug Bagley wrote the original C<Apache::SizeLimit>
 
 =head1 CHANGES
 

@@ -7,6 +7,8 @@ SYNOPSIS
     the process size limiter to check the process size on every request:
 
         # in your startup.pl:
+        # ___________________
+
         use Apache::GTopLimit;
 
         # Control the life based on memory size
@@ -21,6 +23,12 @@ SYNOPSIS
         $Apache::GTopLimit::DEBUG = 1;
 
         # in your httpd.conf:
+        # ___________________
+
+        # debug must be set before the module is loaded
+        PerlSetVar Apache::GTopLimit::DEBUG 1
+
+        # register handler
         PerlFixupHandler Apache::GTopLimit
         # you can set this up as any Perl*Handler that handles 
         # part of the request, even the LogHandler will do.
@@ -109,9 +117,10 @@ DESCRIPTION
     then modified as it pleased to. When this happens a child uses more real
     memory and less shared.
 
-    Because of Perl's nature memory pages get unshared pretty fast, when the
-    code is being executed and it's internal data is being modified. That's
-    why as the child gets older the size of the shared memory goes down.
+    Because of Perl's nature, memory pages get unshared pretty fast, when
+    the code is being executed and it's internal data is being modified.
+    That's why as the child gets older the size of the shared memory goes
+    down.
 
     You can tune your server to kill off the child when its shared memory is
     too low, but it demands a constant retuning of the configuration
@@ -121,14 +130,14 @@ DESCRIPTION
     each process. And when it crosses the line, to kill it off.
 
 AUTHOR
-    Stas Bekman <sbekman@iname.com>:
+    Stas Bekman <stas@stason.org>
 
-    An almost complete rewrite of Apache::SizeLimit toward using GTop module
-    (based on crossplatfom glibtop). The moment glibtop will be ported on
-    all the platforms Apache::SizeLimit runs at (I think only Solaris is
-    missing) Apache::SizeLimit will become absolete.
+    An almost complete rewrite of "Apache::SizeLimit" toward using GTop
+    module (based on crossplatfom glibtop). The moment glibtop will be
+    ported on all the platforms "Apache::SizeLimit" runs at (I think only
+    Solaris is missing) "Apache::SizeLimit" will become absolete.
 
-    Doug Bagley wrote the original Apache::SizeLimit
+    Doug Bagley wrote the original "Apache::SizeLimit"
 
 CHANGES
     See external file 'Changes'.
